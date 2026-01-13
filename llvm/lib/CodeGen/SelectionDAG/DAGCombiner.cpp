@@ -11738,7 +11738,9 @@ SDValue DAGCombiner::foldABSToABD(SDNode *N, const SDLoc &DL) {
   EVT VT = N->getValueType(0);
   SDValue Op0, Op1;
 
-  if (!sd_match(N, m_Abs(m_Sub(m_Value(Op0), m_Value(Op1)))))
+  if (!sd_match(N, m_Abs(m_AnyOf(m_Sub(m_Value(Op0), m_Value(Op1)),
+                                 m_Add(m_Value(Op0),
+                                       m_AllOf(m_ConstInt(), m_Value(Op1)))))))
     return SDValue();
 
   SDValue AbsOp0 = N->getOperand(0);
@@ -11750,16 +11752,26 @@ SDValue DAGCombiner::foldABSToABD(SDNode *N, const SDLoc &DL) {
       (Opc0 != ISD::ZERO_EXTEND && Opc0 != ISD::SIGN_EXTEND &&
        Opc0 != ISD::SIGN_EXTEND_INREG)) {
     // fold (abs (sub nsw x, y)) -> abds(x, y)
+    // fold (abs (add nsw x, -y)) -> abds(x, y)
     // Don't fold this for unsupported types as we lose the NSW handling.
+    bool IsSub = AbsOp0.getOpcode() == ISD::SUB;
+    bool AbsOpWillNSW =
+        AbsOp0->getFlags().hasNoSignedWrap() ||
+        (IsSub ? DAG.willNotOverflowSub(/*IsSigned=*/true, Op0, Op1)
+               : DAG.willNotOverflowAdd(/*IsSigned=*/true, Op0, Op1));
+
     if (hasOperation(ISD::ABDS, VT) && TLI.preferABDSToABSWithNSW(VT) &&
-        (AbsOp0->getFlags().hasNoSignedWrap() ||
-         DAG.willNotOverflowSub(/*IsSigned=*/true, Op0, Op1))) {
+        AbsOpWillNSW) {
+      if (!IsSub)
+        Op1 = DAG.getNegative(Op1, SDLoc(Op1), VT);
       SDValue ABD = DAG.getNode(ISD::ABDS, DL, VT, Op0, Op1);
       return DAG.getZExtOrTrunc(ABD, DL, SrcVT);
     }
     // fold (abs (sub x, y)) -> abdu(x, y)
     if (hasOperation(ISD::ABDU, VT) && DAG.SignBitIsZero(Op0) &&
         DAG.SignBitIsZero(Op1)) {
+      if (!IsSub)
+        Op1 = DAG.getNegative(Op1, SDLoc(Op1), VT);
       SDValue ABD = DAG.getNode(ISD::ABDU, DL, VT, Op0, Op1);
       return DAG.getZExtOrTrunc(ABD, DL, SrcVT);
     }
